@@ -1,8 +1,6 @@
-# Requestly
+# Requestly: AI Agent Micropayments on Algorand
 
-## AI Agent Micropayments on Algorand
-
-**Every request, settled. Instantly.**
+### Every request, settled. Instantly.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Algorand](https://img.shields.io/badge/Algorand-TestNet-blue.svg)](https://testnet.algoexplorer.io/)
