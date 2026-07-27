@@ -8,7 +8,7 @@ A professional landing page for **Requestly**, an AI-powered search monetization
 - **AI-Agent Micropayments**: Simulates autonomous payments of 0.001 USDC per search query.
 - **Algorand Integration**: Showcases Algorand as the high-speed, low-cost settlement layer for agentic commerce.
 - **MCP Native**: Built with the vision of becoming a universal payment layer for Model Context Protocol (MCP) servers.
-- **Modern Tech Stack**: Next.js 14, Tailwind CSS, Lucide React, and Radix UI.
+- **Modern Tech Stack**: Next.js 14, Tailwind CSS, Lucide React, and Radix UI. 
 
 ## Getting Started
 
