@@ -1,0 +1,263 @@
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+
+import { publicProcedure, router } from "../_core/trpc";
+import {
+  getAgentMarketContractId,
+  getAgentMarketContractIdMeta,
+  getSorobanRpcUrlOverride,
+} from "../_core/agentMarketEnv";
+import {
+  loadAgentMarketClient,
+  normalizeActionReceipt,
+  normalizeEscrowRecord,
+  normalizeReputationRecord,
+  normalizeServiceRecord,
+  normalizeSettlementRecord,
+} from "../soroban/agentMarketClient";
+import { agentMarketErrorNameFromCode } from "@shared/agentMarketContract";
+
+
+
+const networkIn = z.enum(["mainnet", "testnet"]).default("testnet");
+
+type AgentMarketClient = NonNullable<Awaited<ReturnType<typeof loadAgentMarketClient>>>;
+
+async function resolveAgentMarketClient(
+  network: z.infer<typeof networkIn>
+): Promise<{ kind: "unconfigured" } | { kind: "ready"; client: AgentMarketClient }> {
+  if (!getAgentMarketContractId()) {
+    return { kind: "unconfigured" };
+  }
+  const client = await loadAgentMarketClient(network);
+  if (!client) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message:
+        "The agent market contract is configured but the Soroban client could not be created. Check the contract ID and Soroban RPC URL.",
+    });
+  }
+  return { kind: "ready", client };
+}
+
+function parseContractUintString(field: string, raw: string): bigint {
+  const s = raw.trim();
+  if (!/^\d+$/.test(s)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${field} must be a non-negative integer`,
+    });
+  }
+  try {
+    return BigInt(s);
+  } catch {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `${field} is not a valid integer`,
+    });
+  }
+}
+
+
+
+type DynClient = Record<string, (args?: Record<string, unknown>) => Promise<unknown>>;
+
+function unwrapSorobanResultTree<T>(raw: unknown): T | undefined {
+  let v: unknown = raw;
+  for (let d = 0; d < 6; d++) {
+    if (v === null || v === undefined) return undefined;
+    if (Array.isArray(v)) return v as T;
+    if (typeof v !== "object") return v as T;
+    const o = v as Record<string, unknown>;
+    if (o.tag === "Err") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `agent_market:${String(o.values ?? "contract_err")}`,
+      });
+    }
+    if (o.tag === "Ok" || o.tag === "Some") {
+      v = o.values;
+      continue;
+    }
+    if (o.tag === "None") return undefined;
+    return v as T;
+  }
+  return undefined;
+}
+
+async function readResult<T>(p: Promise<unknown>): Promise<T | undefined> {
+  try {
+    const tx = (await p) as T;
+    await tx.simulate();
+    return unwrapSorobanResultTree<T>(tx.result);
+  } catch (e) {
+    if (e instanceof TRPCError) throw e;
+
+  }
+}
+
+export const agentMarketContractRouter = router({
+  config: publicProcedure
+    .input(z.object({ network: networkIn }).optional())
+    .query(({ input }) => {
+      const network = input?.network ?? "testnet";
+      const meta = getAgentMarketContractIdMeta();
+      return {
+        configured: Boolean(meta.id),
+        contractId: meta.id ?? null,
+        contractIdSource: meta.source,
+        rpcUrl: "", // Algorand RPC URL will be configured elsewhere
+        network,
+        networkPassphrase: "", // Algorand network passphrase will be configured elsewhere
+      } as const;
+    }),
+
+  /** Build/test/deploy health hints for developers; includes a live Soroban simulation probe when configured. */
+  diagnostics: publicProcedure
+    .input(z.object({ network: networkIn }).optional())
+    .query(async ({ input }) => {
+      const network = input?.network ?? "testnet";
+      const meta = getAgentMarketContractIdMeta();
+      const rpcUrl = ""; // Algorand RPC URL will be configured elsewhere
+
+      let probe:
+        | { ok: true; listSampleLen: number }
+        | { ok: false; stage: string; message: string } = {
+        ok: false,
+        stage: "skipped",
+        message: "contract id not configured",
+      };
+
+      if (meta.id) {
+        try {
+          const client = await loadAgentMarketClient(network);
+          if (!client) {
+            probe = {
+              ok: false,
+              stage: "client",
+              message: "Algorand client not yet implemented",
+            };
+          } else {
+            const raw: unknown[] = []; // Placeholder for Algorand contract interaction
+            probe = { ok: true, listSampleLen: Array.isArray(raw) ? raw.length : 0 };
+          }
+        } catch (e) {
+          const msg = e instanceof TRPCError ? e.message : e instanceof Error ? e.message : String(e);
+          probe = { ok: false, stage: "simulation", message: msg };
+        }
+      }
+
+      return {
+        network,
+        rpcUrl,
+        contractId: meta.id,
+        contractIdSource: meta.source,
+        sorobanProbe: probe,
+      } as const;
+    }),
+
+  getService: publicProcedure
+    .input(z.object({ network: networkIn, serviceId: z.number().int().nonnegative() }))
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, service: null };
+      const client = gate.client;
+      const raw: unknown = null; // Placeholder for Algorand contract interaction
+      return {
+        configured: true as const,
+        service: normalizeServiceRecord(raw ?? null),
+      };
+    }),
+
+  listServices: publicProcedure
+    .input(
+      z.object({
+        network: networkIn,
+        startAfter: z.number().int().nonnegative().default(0),
+        limit: z.number().int().min(1).max(32).default(16),
+      })
+    )
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, services: [] as const };
+      const client = gate.client;
+      const raw: unknown[] = []; // Placeholder for Algorand contract interaction
+      const services = (raw ?? [])
+        .map(s => normalizeServiceRecord(s))
+        .filter((s): s is NonNullable<typeof s> => s != null);
+      return { configured: true as const, services };
+    }),
+
+  listServicesFilter: publicProcedure
+    .input(
+      z.object({
+        network: networkIn,
+        statusFilter: z.number().int().nonnegative(),
+        accessFilter: z.number().int().nonnegative(),
+        startAfter: z.number().int().nonnegative().default(0),
+        limit: z.number().int().min(1).max(32).default(16),
+      })
+    )
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, services: [] as const };
+      const client = gate.client;
+      const raw: unknown[] = []; // Placeholder for Algorand contract interaction
+      const services = (raw ?? [])
+        .map(s => normalizeServiceRecord(s))
+        .filter((s): s is NonNullable<typeof s> => s != null);
+      return { configured: true as const, services };
+    }),
+
+  getEscrow: publicProcedure
+    .input(z.object({ network: networkIn, escrowId: z.string() }))
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, escrow: null };
+      const client = gate.client;
+      const raw: unknown = null; // Placeholder for Algorand contract interaction
+      return {
+        configured: true as const,
+        escrow: raw == null ? null : normalizeEscrowRecord(raw),
+      };
+    }),
+
+  getSettlement: publicProcedure
+    .input(z.object({ network: networkIn, requestId: z.string() }))
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, settlement: null };
+      const client = gate.client;
+      const raw: unknown = null; // Placeholder for Algorand contract interaction
+      return {
+        configured: true as const,
+        settlement: raw == null ? null : normalizeSettlementRecord(raw),
+      };
+    }),
+
+  getActionReceipt: publicProcedure
+    .input(z.object({ network: networkIn, requestId: z.string() }))
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, receipt: null };
+      const client = gate.client;
+      const raw: unknown = null; // Placeholder for Algorand contract interaction
+      return {
+        configured: true as const,
+        receipt: raw == null ? null : normalizeActionReceipt(raw),
+      };
+    }),
+
+  getReputation: publicProcedure
+    .input(z.object({ network: networkIn, serviceId: z.number().int().nonnegative() }))
+    .query(async ({ input }) => {
+      const gate = await resolveAgentMarketClient(input.network);
+      if (gate.kind === "unconfigured") return { configured: false as const, reputation: null };
+      const client = gate.client;
+      const raw: unknown = null; // Placeholder for Algorand contract interaction
+      return {
+        configured: true as const,
+        reputation: raw == null ? null : normalizeReputationRecord(raw),
+      };
+    }),
+});
